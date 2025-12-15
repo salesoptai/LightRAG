@@ -8,7 +8,6 @@ import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
-import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
 
 const LoginPage = () => {
@@ -152,12 +151,10 @@ const LoginPage = () => {
       <Card className="w-full max-w-[480px] shadow-lg mx-4">
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
           <div className="flex flex-col items-center space-y-4">
-            <div className="flex items-center gap-3">
-              <img src="logo.svg" alt="LightRAG Logo" className="h-12 w-12" />
-              <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
+            <div className="flex flex-col items-center">
+              <img src="nexopta-logo-long.png" alt="Nexopta" className="h-24 w-auto mb-4" />
             </div>
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
               <p className="text-muted-foreground text-sm">
                 {t('login.description')}
               </p>

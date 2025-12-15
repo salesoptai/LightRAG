@@ -83,7 +83,7 @@ export const supportedFileTypes = {
 }
 
 export const SiteInfo = {
-  name: 'LightRAG',
+  name: 'Nexopta',
   home: '/',
   github: 'https://github.com/HKUDS/LightRAG'
 }
