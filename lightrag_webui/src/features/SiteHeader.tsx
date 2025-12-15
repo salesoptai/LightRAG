@@ -85,7 +85,7 @@ export default function SiteHeader() {
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="font-medium text-sm cursor-default">
+                  <span className="font-medium text-sm cursor-default text-foreground">
                     {webuiTitle}
                   </span>
                 </TooltipTrigger>
