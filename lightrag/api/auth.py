@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta
+import json
+import os
 
 import jwt
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
 from pydantic import BaseModel
+from lightrag.utils import logger
 
 from .config import global_args
 
@@ -27,11 +30,65 @@ class AuthHandler:
         self.expire_hours = global_args.token_expire_hours
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
+        self.api_keys = {}
+        self.user_map = {}
+        
+        # Load accounts from environment variable (legacy/simple mode)
         auth_accounts = global_args.auth_accounts
         if auth_accounts:
             for account in auth_accounts.split(","):
                 username, password = account.split(":", 1)
                 self.accounts[username] = password
+                self.user_map[username] = {"username": username, "workspace": "default"}
+        
+        # Load accounts from users.json (multi-tenant mode)
+        self.load_users()
+
+    def load_users(self):
+        if os.path.exists("users.json"):
+            try:
+                with open("users.json", "r") as f:
+                    data = json.load(f)
+                    for user in data.get("users", []):
+                        username = user.get("username")
+                        password = user.get("password")
+                        api_key = user.get("api_key")
+                        
+                        if username:
+                            self.user_map[username] = user
+                            if password:
+                                self.accounts[username] = password
+                            if api_key:
+                                self.api_keys[api_key] = user
+                logger.info(f"Loaded {len(self.user_map)} users from users.json")
+            except Exception as e:
+                logger.error(f"Error loading users.json: {e}")
+
+    def validate_api_key(self, api_key: str) -> dict:
+        """
+        Validate API Key
+        
+        Args:
+            api_key: The API Key to validate
+            
+        Returns:
+            dict: User info if valid, None otherwise
+        """
+        if api_key in self.api_keys:
+            user = self.api_keys[api_key]
+            return {
+                "username": user["username"],
+                "role": user.get("role", "user"),
+                "workspace": user.get("workspace", "default"),
+                "metadata": {"auth_mode": "api_key"}
+            }
+        return None
+
+    def get_user_workspace(self, username: str) -> str:
+        """Get workspace for a username"""
+        if username in self.user_map:
+            return self.user_map[username].get("workspace", "default")
+        return "default"
 
     def create_token(
         self,
@@ -94,11 +151,20 @@ class AuthHandler:
                 )
 
             # Return complete payload instead of just username
+            username = payload["sub"]
+            workspace = self.get_user_workspace(username)
+            
+            # Allow metadata to override workspace if explicitly set (though usually comes from user config)
+            metadata = payload.get("metadata", {})
+            if "workspace" not in metadata:
+                metadata["workspace"] = workspace
+
             return {
-                "username": payload["sub"],
+                "username": username,
                 "role": payload.get("role", "user"),
-                "metadata": payload.get("metadata", {}),
+                "metadata": metadata,
                 "exp": expire_time,
+                "workspace": workspace, # Explicitly return workspace
             }
         except jwt.PyJWTError:
             raise HTTPException(

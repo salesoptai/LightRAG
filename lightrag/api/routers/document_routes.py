@@ -2058,7 +2058,11 @@ def create_document_routes(
         track_id = generate_track_id("scan")
 
         # Start the scanning process in the background with track_id
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+        # Ensure we pass the actual instances to background tasks, as context vars might not propagate
+        bound_rag = rag.get_bound_instance() if hasattr(rag, "get_bound_instance") else rag
+        bound_doc_manager = doc_manager.get_bound_instance() if hasattr(doc_manager, "get_bound_instance") else doc_manager
+        
+        background_tasks.add_task(run_scanning_process, bound_rag, bound_doc_manager, track_id)
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
@@ -2127,7 +2131,8 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            bound_rag = rag.get_bound_instance() if hasattr(rag, "get_bound_instance") else rag
+            background_tasks.add_task(pipeline_index_file, bound_rag, file_path, track_id)
 
             return InsertResponse(
                 status="success",
@@ -2200,9 +2205,10 @@ def create_document_routes(
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
+            bound_rag = rag.get_bound_instance() if hasattr(rag, "get_bound_instance") else rag
             background_tasks.add_task(
                 pipeline_index_texts,
-                rag,
+                bound_rag,
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
@@ -2283,9 +2289,10 @@ def create_document_routes(
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
+            bound_rag = rag.get_bound_instance() if hasattr(rag, "get_bound_instance") else rag
             background_tasks.add_task(
                 pipeline_index_texts,
-                rag,
+                bound_rag,
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
@@ -2764,10 +2771,13 @@ def create_document_routes(
                     )
 
             # Add deletion task to background tasks
+            bound_rag = rag.get_bound_instance() if hasattr(rag, "get_bound_instance") else rag
+            bound_doc_manager = doc_manager.get_bound_instance() if hasattr(doc_manager, "get_bound_instance") else doc_manager
+            
             background_tasks.add_task(
                 background_delete_documents,
-                rag,
-                doc_manager,
+                bound_rag,
+                bound_doc_manager,
                 doc_ids,
                 delete_request.delete_file,
                 delete_request.delete_llm_cache,

@@ -3,17 +3,19 @@
 ## 1. Executive Summary
 This document outlines the architectural changes required to transform the LightRAG application into a multi-tenant system. The primary goal is to support multiple users with isolated data environments (workspaces) accessed via unique API keys, while minimizing changes to the core codebase to facilitate future updates from the upstream open-source project.
 
-**Core Approach:** Use a **Proxy Pattern** with **Context-Aware Middleware**. This effectively intercepts API calls and routes them to the correct user's LightRAG instance without modifying the existing API router logic.
+**Core Approach:** Use a **Proxy Pattern** with **Context-Aware Middleware**. This intercepts API calls and routes them to the correct user's `LightRAG` instance and `DocumentManager` without modifying the existing API router logic.
 
 ## 2. Architecture Design
 
 ### 2.1 Data Isolation Strategy
-We will utilize LightRAG's native "workspace" concept for data isolation.
-*   **Storage Path:** Each workspace creates a subdirectory in the working directory (e.g., `rag_storage/tenant_a`, `rag_storage/tenant_b`).
-*   **Isolation:** All KV stores, Vector DBs, and Graph DBs are initialized within this workspace subdirectory, ensuring strict data separation.
+We will utilize LightRAG's native "workspace" concept for data isolation across all storage backends.
+
+*   **Production Database (PostgreSQL):** The `PG*` storage implementations (`PGKVStorage`, `PGVectorStorage`, etc.) already support a `workspace` column. We will ensure the `LightRAG` instance is initialized with the correct workspace, which propagates to all SQL queries.
+*   **File Storage (Local/Dev):** For local development using JSON/NanoVectorDB, each workspace creates a subdirectory in the working directory (e.g., `rag_storage/tenant_a`).
+*   **Document Input:** Uploaded files will be isolated in tenant-specific subdirectories (e.g., `inputs/tenant_a`) using a proxied `DocumentManager`.
 
 ### 2.2 User & Access Management
-*   **Configuration Source:** A new `users.json` file will serve as the source of truth for tenant credentials.
+*   **Configuration Source:** A new `users.json` file will serve as the source of truth for tenant credentials. In production, this file should be mounted via Google Secret Manager.
 *   **Schema:**
     ```json
     {
@@ -31,40 +33,51 @@ We will utilize LightRAG's native "workspace" concept for data isolation.
 
 ### 2.3 Instance Management (RagManager)
 A new singleton component, `RagManager`, will be responsible for:
-*   maintaining a registry of active `LightRAG` instances (`Dict[workspace, LightRAG]`).
+*   Maintaining a registry of active `LightRAG` instances (`Dict[workspace, LightRAG]`).
 *   Lazily initializing instances upon first request.
 *   Managing resource lifecycle (connections, file handles) for each tenant.
 
+### 2.4 Document Management Isolation
+A `DocumentManagerProxy` will be introduced to handle tenant-specific file operations.
+*   It intercepts calls to `scan_directory` and file paths.
+*   It resolves the `input_dir` dynamically based on the current tenant (e.g., `inputs/{workspace}`).
+
 ## 3. Implementation Details: The Proxy Pattern
 
-To avoid modifying the complex and frequently changing API routers (`document_routes.py`, `query_routes.py`, etc.), we will inject a **Proxy Object** instead of a static `LightRAG` instance.
+To avoid modifying the complex and frequently changing API routers (`document_routes.py`, `query_routes.py`, etc.), we will inject **Proxy Objects** (`LightRAGProxy` and `DocumentManagerProxy`) instead of static instances.
 
 ### 3.1 Components
 
 1.  **`ContextVar` Registry**: A thread-safe global registry using Python's `contextvars` to store the `current_workspace` for the active request.
 2.  **`LightRAGProxy` Class**: Implements the `LightRAG` interface but contains no state.
-    *   **Delegation**: For every method call (e.g., `query()`, `insert()`) or attribute access, it retrieves the `current_workspace` from the context.
-    *   **Resolution**: It calls `RagManager.get_rag(workspace)` to get the real instance.
-    *   **Execution**: It forwards the call to the real instance.
-3.  **`TenantMiddleware`**: A FastAPI middleware that runs before every request.
+    *   **Delegation**: For every method call, it retrieves the `current_workspace`.
+    *   **Resolution**: Calls `RagManager.get_rag(workspace)` to get the real instance.
+    *   **Execution**: Forwards the call to the real instance.
+3.  **`DocumentManagerProxy` Class**: Similar to above, but manages `DocumentManager` instances to ensure file uploads go to the correct tenant directory.
+4.  **`TenantMiddleware`**: A FastAPI middleware that runs before every request.
     *   Extracts Auth Token / API Key.
     *   Validates credentials against `users.json`.
     *   Sets the `current_workspace` context variable.
 
-### 3.2 Handling Background Tasks
-Background tasks in FastAPI run after the response is sent, potentially clearing the request context.
-*   **Solution**: The Proxy will capture the *current* context at the moment a task is scheduled (when `rag.method` is accessed inside the route), ensuring the background thread executes against the correct workspace.
+### 3.2 Handling Background Tasks (Context Binding)
+Background tasks in FastAPI (like `background_tasks.add_task`) run after the response is sent, at which point the request context (and `ContextVar`) is often cleared or invalid.
+
+*   **Problem**: Passing the global `Proxy` object to a background task helper function (e.g., `pipeline_index_file(rag, ...)`) fails because the helper function accesses the proxy *inside* the background thread, where the context is lost.
+*   **Solution**: The Proxy must support **Context Binding**.
+    *   We will modify the router calls to pass a "bound" instance to background tasks.
+    *   **Mechanism**: The `LightRAGProxy` will implement a method `get_bound_instance()` (or similar) that resolves the *current* tenant's real `LightRAG` instance *during the request*.
+    *   **Router Change**: Slight modifications to `document_routes.py` may be required to pass `rag.get_bound_instance()` instead of `rag` to `background_tasks.add_task`. Alternatively, we can wrap `BackgroundTasks` to automatically capture and propagate context. *Decision: We will attempt to wrap the task function with a context-preserving decorator to minimize router changes.*
 
 ## 4. Key File Changes
 
 | File | Status | Description |
 | :--- | :--- | :--- |
-| `lightrag/api/rag_manager.py` | **New** | Manages pool of LightRAG instances. |
-| `lightrag/api/proxy.py` | **New** | Implements `LightRAGProxy` and context vars. |
+| `lightrag/api/rag_manager.py` | **New** | Manages pool of `LightRAG` and `DocumentManager` instances. |
+| `lightrag/api/proxy.py` | **New** | Implements `LightRAGProxy`, `DocumentManagerProxy`, and context vars. |
 | `lightrag/api/auth.py` | Modify | Update to load/validate against `users.json`. |
-| `lightrag/api/lightrag_server.py` | Modify | Initialize `RagManager` & `Proxy`, add Middleware. |
+| `lightrag/api/lightrag_server.py` | Modify | Initialize `RagManager` & Proxies, add Middleware. |
 | `users.json` | **New** | Configuration for tenants/users. |
-| `lightrag/api/routers/*` | **No Change** | **Remains untouched for easy updates.** |
+| `lightrag/api/routers/document_routes.py` | Minimal Change | May need slight update to support background task context propagation if decorator approach isn't sufficient. |
 
 ## 5. Request Flow
 

@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "username": "default",
+      "password": "password",
+      "api_key": "sk-default-key",
+      "workspace": "default"
+    },
+    {
+      "username": "tenant_a",
+      "password": "password_a",
+      "api_key": "sk-tenant-a-key",
+      "workspace": "tenant_a"
+    }
+  ]
+}

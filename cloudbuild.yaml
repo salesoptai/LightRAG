@@ -47,6 +47,8 @@ steps:
       # Ensure database environment variable matches the target environment
       - '--update-env-vars'
       - 'POSTGRES_DATABASE=${_DB_NAME}'
+      # Mount users.json secret for multi-tenancy
+      - '--set-secrets=/app/users.json=lightrag-users-config:latest'
 
 # ==============================================================================
 # SUBSTITUTIONS

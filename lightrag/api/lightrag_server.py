@@ -64,6 +64,10 @@ from lightrag.kg.shared_storage import (
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 
+# Multi-tenant imports
+from lightrag.api.proxy import LightRAGProxy, DocumentManagerProxy, current_workspace
+from lightrag.api.rag_manager import RagManager
+
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
@@ -343,8 +347,7 @@ def create_app(args):
     # Check if API key is provided either through env var or args
     api_key = os.getenv("LIGHTRAG_API_KEY") or args.key
 
-    # Initialize document manager with workspace support for data isolation
-    doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
+    # Initialize Document Manager logic is moved to RagManager
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -353,12 +356,8 @@ def create_app(args):
         app.state.background_tasks = set()
 
         try:
-            # Initialize database connections
-            # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
-            await rag.initialize_storages()
-
-            # Data migration regardless of storage implementation
-            await rag.check_and_migrate_data()
+            # Initialize default tenant
+            await rag_manager.ensure_tenant_initialized("default")
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
@@ -366,7 +365,7 @@ def create_app(args):
 
         finally:
             # Clean up database connections
-            await rag.finalize_storages()
+            await rag_manager.finalize_all()
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
@@ -648,23 +647,6 @@ def create_app(args):
         """
         Create optimized embedding function and return an EmbeddingFunc instance
         with proper max_token_size inheritance from provider defaults.
-
-        This function:
-        1. Imports the provider embedding function
-        2. Extracts max_token_size and embedding_dim from provider if it's an EmbeddingFunc
-        3. Creates an optimized wrapper that calls the underlying function directly (avoiding double-wrapping)
-        4. Returns a properly configured EmbeddingFunc instance
-
-        Configuration Rules:
-        - When EMBEDDING_MODEL is not set: Uses provider's default model and dimension
-          (e.g., jina-embeddings-v4 with 2048 dims, text-embedding-3-small with 1536 dims)
-        - When EMBEDDING_MODEL is set to a custom model: User MUST also set EMBEDDING_DIM
-          to match the custom model's dimension (e.g., for jina-embeddings-v3, set EMBEDDING_DIM=1024)
-
-        Note: The embedding_dim parameter is automatically injected by EmbeddingFunc wrapper
-        when send_dimensions=True (enabled for Jina and Gemini bindings). This wrapper calls
-        the underlying provider function directly (.func) to avoid double-wrapping, so we must
-        explicitly pass embedding_dim to the provider's underlying function.
         """
 
         # Step 1: Import provider function and extract default attributes
@@ -715,49 +697,35 @@ def create_app(args):
             logger.warning(f"Could not import provider function for {binding}: {e}")
 
         # Step 2: Apply priority (user config > provider default)
-        # For max_token_size: explicit env var > provider default > None
         final_max_token_size = args.embedding_token_limit or provider_max_token_size
-        # For embedding_dim: user config (always has value) takes priority
-        # Only use provider default if user config is explicitly None (which shouldn't happen)
         final_embedding_dim = (
             args.embedding_dim if args.embedding_dim else provider_embedding_dim
         )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
-        # Note: When model is None, each binding will use its own default model
         async def optimized_embedding_function(texts, embedding_dim=None):
             try:
                 if binding == "lollms":
                     from lightrag.llm.lollms import lollms_embed
-
-                    # Get real function, skip EmbeddingFunc wrapper if present
                     actual_func = (
                         lollms_embed.func
                         if isinstance(lollms_embed, EmbeddingFunc)
                         else lollms_embed
                     )
-                    # lollms embed_model is not used (server uses configured vectorizer)
-                    # Only pass base_url and api_key
                     return await actual_func(texts, base_url=host, api_key=api_key)
                 elif binding == "ollama":
                     from lightrag.llm.ollama import ollama_embed
-
-                    # Get real function, skip EmbeddingFunc wrapper if present
                     actual_func = (
                         ollama_embed.func
                         if isinstance(ollama_embed, EmbeddingFunc)
                         else ollama_embed
                     )
-
-                    # Use pre-processed configuration if available
                     if config_cache.ollama_embedding_options is not None:
                         ollama_options = config_cache.ollama_embedding_options
                     else:
                         from lightrag.llm.binding_options import OllamaEmbeddingOptions
-
                         ollama_options = OllamaEmbeddingOptions.options_dict(args)
 
-                    # Pass embed_model only if provided, let function use its default (bge-m3:latest)
                     kwargs = {
                         "texts": texts,
                         "host": host,
@@ -769,39 +737,33 @@ def create_app(args):
                     return await actual_func(**kwargs)
                 elif binding == "azure_openai":
                     from lightrag.llm.azure_openai import azure_openai_embed
-
                     actual_func = (
                         azure_openai_embed.func
                         if isinstance(azure_openai_embed, EmbeddingFunc)
                         else azure_openai_embed
                     )
-                    # Pass model only if provided, let function use its default otherwise
                     kwargs = {"texts": texts, "api_key": api_key}
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
                 elif binding == "aws_bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
-
                     actual_func = (
                         bedrock_embed.func
                         if isinstance(bedrock_embed, EmbeddingFunc)
                         else bedrock_embed
                     )
-                    # Pass model only if provided, let function use its default otherwise
                     kwargs = {"texts": texts}
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
                 elif binding == "jina":
                     from lightrag.llm.jina import jina_embed
-
                     actual_func = (
                         jina_embed.func
                         if isinstance(jina_embed, EmbeddingFunc)
                         else jina_embed
                     )
-                    # Pass model only if provided, let function use its default (jina-embeddings-v4)
                     kwargs = {
                         "texts": texts,
                         "embedding_dim": embedding_dim,
@@ -813,22 +775,17 @@ def create_app(args):
                     return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
-
                     actual_func = (
                         gemini_embed.func
                         if isinstance(gemini_embed, EmbeddingFunc)
                         else gemini_embed
                     )
-
-                    # Use pre-processed configuration if available
                     if config_cache.gemini_embedding_options is not None:
                         gemini_options = config_cache.gemini_embedding_options
                     else:
                         from lightrag.llm.binding_options import GeminiEmbeddingOptions
-
                         gemini_options = GeminiEmbeddingOptions.options_dict(args)
 
-                    # Pass model only if provided, let function use its default (gemini-embedding-001)
                     kwargs = {
                         "texts": texts,
                         "base_url": host,
@@ -843,13 +800,11 @@ def create_app(args):
                     return await actual_func(**kwargs)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
-
                     actual_func = (
                         openai_embed.func
                         if isinstance(openai_embed, EmbeddingFunc)
                         else openai_embed
                     )
-                    # Pass model only if provided, let function use its default (text-embedding-3-small)
                     kwargs = {
                         "texts": texts,
                         "base_url": host,
@@ -867,10 +822,9 @@ def create_app(args):
             embedding_dim=final_embedding_dim,
             func=optimized_embedding_function,
             max_token_size=final_max_token_size,
-            send_dimensions=False,  # Will be set later based on binding requirements
+            send_dimensions=False,
         )
 
-        # Log final embedding configuration
         logger.info(
             f"Embedding config: binding={binding} model={model} "
             f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size}"
@@ -913,7 +867,7 @@ def create_app(args):
     # Create embedding function with optimized configuration and max_token_size inheritance
     import inspect
 
-    # Create the EmbeddingFunc instance (now returns complete EmbeddingFunc with max_token_size)
+    # Create the EmbeddingFunc instance
     embedding_func = create_optimized_embedding_function(
         config_cache=config_cache,
         binding=args.embedding_binding,
@@ -930,15 +884,10 @@ def create_app(args):
     sig = inspect.signature(embedding_func.func)
     has_embedding_dim_param = "embedding_dim" in sig.parameters
 
-    # Determine send_dimensions value based on binding type
-    # Jina and Gemini REQUIRE dimension parameter (forced to True)
-    # OpenAI and others: controlled by EMBEDDING_SEND_DIM environment variable
     if args.embedding_binding in ["jina", "gemini"]:
-        # Jina and Gemini APIs require dimension parameter - always send it
         send_dimensions = has_embedding_dim_param
         dimension_control = f"forced by {args.embedding_binding.title()} API"
     else:
-        # For OpenAI and other bindings, respect EMBEDDING_SEND_DIM setting
         send_dimensions = embedding_send_dim and has_embedding_dim_param
         if send_dimensions or not embedding_send_dim:
             dimension_control = "by env var"
@@ -953,19 +902,6 @@ def create_app(args):
         f"(dimensions={embedding_func.embedding_dim}, has_param={has_embedding_dim_param}, "
         f"binding={args.embedding_binding})"
     )
-
-    # Log max_token_size source
-    if embedding_func.max_token_size:
-        source = (
-            "env variable"
-            if args.embedding_token_limit
-            else f"{args.embedding_binding} provider default"
-        )
-        logger.info(
-            f"Embedding max_token_size: {embedding_func.max_token_size} (from {source})"
-        )
-    else:
-        logger.info("Embedding max_token_size: not set (90% token warning disabled)")
 
     # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None
@@ -1041,44 +977,53 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
-    # Initialize RAG with unified configuration
+    # Initialize RAG Manager for multi-tenancy
     try:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            summary_max_tokens=args.summary_max_tokens,
-            summary_context_size=args.summary_context_size,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs=create_llm_model_kwargs(
+        rag_init_params = {
+            "working_dir": args.working_dir,
+            "llm_model_func": create_llm_model_func(args.llm_binding),
+            "llm_model_name": args.llm_model,
+            "llm_model_max_async": args.max_async,
+            "summary_max_tokens": args.summary_max_tokens,
+            "summary_context_size": args.summary_context_size,
+            "chunk_token_size": int(args.chunk_size),
+            "chunk_overlap_token_size": int(args.chunk_overlap_size),
+            "llm_model_kwargs": create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
             ),
-            embedding_func=embedding_func,
-            default_llm_timeout=llm_timeout,
-            default_embedding_timeout=embedding_timeout,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
+            "embedding_func": embedding_func,
+            "default_llm_timeout": llm_timeout,
+            "default_embedding_timeout": embedding_timeout,
+            "kv_storage": args.kv_storage,
+            "graph_storage": args.graph_storage,
+            "vector_storage": args.vector_storage,
+            "doc_status_storage": args.doc_status_storage,
+            "vector_db_storage_cls_kwargs": {
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            rerank_model_func=rerank_model_func,
-            max_parallel_insert=args.max_parallel_insert,
-            max_graph_nodes=args.max_graph_nodes,
-            addon_params={
+            "enable_llm_cache_for_entity_extract": args.enable_llm_cache_for_extract,
+            "enable_llm_cache": args.enable_llm_cache,
+            "rerank_model_func": rerank_model_func,
+            "max_parallel_insert": args.max_parallel_insert,
+            "max_graph_nodes": args.max_graph_nodes,
+            "addon_params": {
                 "language": args.summary_language,
                 "entity_types": args.entity_types,
             },
-            ollama_server_infos=ollama_server_infos,
-        )
+            "ollama_server_infos": ollama_server_infos,
+        }
+        
+        doc_manager_params = {
+            "input_dir": args.input_dir,
+            "supported_extensions": DocumentManager(args.input_dir).supported_extensions
+        }
+
+        rag_manager = RagManager(rag_init_params, doc_manager_params)
+        rag = LightRAGProxy(rag_manager)
+        doc_manager = DocumentManagerProxy(rag_manager)
+
     except Exception as e:
-        logger.error(f"Failed to initialize LightRAG: {e}")
+        logger.error(f"Failed to initialize LightRAG Manager: {e}")
         raise
 
     # Add routes
@@ -1095,6 +1040,41 @@ def create_app(args):
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
+
+    # Add Multi-tenant Middleware
+    @app.middleware("http")
+    async def tenant_middleware(request: Request, call_next):
+        # 1. Identify Workspace
+        workspace = "default"
+        
+        # Check API Key header
+        header_api_key = request.headers.get("X-API-Key")
+        if header_api_key:
+             user_info = auth_handler.validate_api_key(header_api_key)
+             if user_info:
+                 workspace = user_info.get("workspace", "default")
+        
+        # Check Authorization header (Bearer)
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+             token_str = auth_header.split(" ")[1]
+             try:
+                 user_info = auth_handler.validate_token(token_str)
+                 workspace = user_info.get("workspace", "default")
+             except:
+                 pass # Invalid token, ignore here, let auth dependency handle it later
+
+        # 2. Initialize Tenant
+        await rag_manager.ensure_tenant_initialized(workspace)
+        
+        # 3. Set Context
+        token = current_workspace.set(workspace)
+        
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            current_workspace.reset(token)
 
     # Custom Swagger UI endpoint for offline support
     @app.get("/docs", include_in_schema=False)
@@ -1192,42 +1172,17 @@ def create_app(args):
         "/health",
         dependencies=[Depends(combined_auth)],
         summary="Get system health and configuration status",
-        description="Returns comprehensive system status including WebUI availability, configuration, and operational metrics",
-        response_description="System health status with configuration details",
-        responses={
-            200: {
-                "description": "Successful response with system status",
-                "content": {
-                    "application/json": {
-                        "example": {
-                            "status": "healthy",
-                            "webui_available": True,
-                            "working_directory": "/path/to/working/dir",
-                            "input_directory": "/path/to/input/dir",
-                            "configuration": {
-                                "llm_binding": "openai",
-                                "llm_model": "gpt-4",
-                                "embedding_binding": "openai",
-                                "embedding_model": "text-embedding-ada-002",
-                                "workspace": "default",
-                            },
-                            "auth_mode": "enabled",
-                            "pipeline_busy": False,
-                            "core_version": "0.0.1",
-                            "api_version": "0.0.1",
-                        }
-                    }
-                },
-            }
-        },
     )
     async def get_status(request: Request):
         """Get current system status including WebUI availability"""
         try:
-            workspace = get_workspace_from_request(request)
-            default_workspace = get_default_workspace()
-            if workspace is None:
-                workspace = default_workspace
+            # We can use the current workspace via proxy
+            # workspace = get_workspace_from_request(request) # Legacy
+            # The middleware already sets the context, so accessing rag.workspace should work
+            
+            # Use proxy's current workspace
+            workspace = current_workspace.get()
+            
             pipeline_status = await get_namespace_data(
                 "pipeline_status", workspace=workspace
             )
@@ -1262,7 +1217,7 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
-                    "workspace": default_workspace,
+                    "workspace": workspace,
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
