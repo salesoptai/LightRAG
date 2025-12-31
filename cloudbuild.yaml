@@ -1,0 +1,68 @@
+steps:
+  # ==============================================================================
+  # STEP 1: Build the Container Image
+  # ==============================================================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build Docker Image'
+    args:
+      - 'build'
+      - '--no-cache'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${SHORT_SHA}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:latest'
+      - '.'
+
+  # ==============================================================================
+  # STEP 2: Push the Container Image to Artifact Registry
+  # ==============================================================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push Image (Commit SHA)'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${SHORT_SHA}'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push Image (Latest)'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:latest'
+
+  # ==============================================================================
+  # STEP 3: Deploy to Cloud Run
+  # ==============================================================================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'Deploy to Cloud Run'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${SHORT_SHA}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      # Ensure database environment variable matches the target environment
+      - '--update-env-vars'
+      - 'POSTGRES_DATABASE=${_DB_NAME}'
+
+# ==============================================================================
+# SUBSTITUTIONS
+# These variables can be overridden in the Cloud Build Trigger configuration
+# ==============================================================================
+substitutions:
+  _REGION: northamerica-northeast2
+  _REPO_NAME: cloud-run-source-deploy
+  _IMAGE_NAME: lightrag/lightrag
+  # Default values (Targeting Staging by default for safety)
+  _SERVICE_NAME: lightrag-staging
+  _DB_NAME: lightrag_staging
+
+# ==============================================================================
+# IMAGES
+# ==============================================================================
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:latest'
