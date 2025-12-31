@@ -357,7 +357,13 @@ def create_app(args):
 
         try:
             # Initialize default tenant
-            await rag_manager.ensure_tenant_initialized("default")
+            try:
+                await rag_manager.ensure_tenant_initialized("default")
+            except Exception as e:
+                logger.error(f"Failed to initialize default tenant: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # We continue to allow server to start to inspect logs
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
