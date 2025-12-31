@@ -86,10 +86,17 @@ COPY uv.lock .
 # Ensure the installed scripts are on PATH
 ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
+# Cloud Run may not honor WORKDIR for module resolution in all cases.
+# Ensure the application source directory is always importable.
+ENV PYTHONPATH=/app
+
 # Install dependencies with uv sync (uses locked versions from uv.lock)
 # And ensure pip is available for runtime installs
 RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
     && /app/.venv/bin/python -m ensurepip --upgrade
+
+# Fail the image build early if the app package cannot be imported.
+RUN python -c "import lightrag; print('LightRAG import OK:', lightrag.__file__)"
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
