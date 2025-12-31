@@ -6,7 +6,6 @@ steps:
     id: 'Build Docker Image'
     args:
       - 'build'
-      - '--no-cache'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${SHORT_SHA}'
       - '-t'
@@ -44,6 +43,7 @@ steps:
       - '${_REGION}'
       - '--platform'
       - 'managed'
+      - '--timeout=600'
       # Ensure database environment variable matches the target environment
       - '--update-env-vars'
       - 'POSTGRES_DATABASE=${_DB_NAME}'
