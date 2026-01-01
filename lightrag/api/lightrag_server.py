@@ -1071,7 +1071,14 @@ def create_app(args):
                  pass # Invalid token, ignore here, let auth dependency handle it later
 
         # 2. Initialize Tenant
-        await rag_manager.ensure_tenant_initialized(workspace)
+        try:
+            await rag_manager.ensure_tenant_initialized(workspace)
+        except Exception as e:
+            logger.error(f"Tenant initialization failed for workspace '{workspace}': {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"Tenant initialization failed: {str(e)}"}
+            )
         
         # 3. Set Context
         token = current_workspace.set(workspace)
