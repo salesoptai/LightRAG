@@ -33,7 +33,8 @@ class RagManager:
         if workspace not in self.rag_instances:
             # This path is a fallback. Ideally ensure_tenant_initialized should be called first.
             logger.warning(f"Sync creation of RAG instance for {workspace}. Storages might not be initialized.")
-            self.rag_instances[workspace] = self._create_rag(workspace)
+            # Do NOT cache the uninitialized instance to avoid poisoning the state
+            return self._create_rag(workspace)
             
         return self.rag_instances[workspace]
 

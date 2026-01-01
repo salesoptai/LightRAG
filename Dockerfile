@@ -22,7 +22,9 @@ RUN cd lightrag_webui \
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV UV_SYSTEM_PYTHON=1
+# Use uv-managed virtualenv in /app/.venv (default).
+# NOTE: Do NOT force system python here; Cloud Run runtime should use /app/.venv.
+ENV UV_SYSTEM_PYTHON=0
 ENV UV_COMPILE_BYTECODE=1
 
 WORKDIR /app
@@ -66,14 +68,15 @@ RUN mkdir -p /app/data/tiktoken \
     if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
 
 # Final stage
-FROM python:3.12-slim
+# IMPORTANT: The runtime base image MUST match the builder image's Python layout.
+# We copy /app/.venv from the uv builder image; if we switch to python:3.12-slim,
+# the venv's interpreter symlink can break ("/app/.venv/bin/python: no such file").
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 WORKDIR /app
 
-# Install uv for package management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-ENV UV_SYSTEM_PYTHON=1
+# Use the copied uv-managed virtualenv at /app/.venv.
+ENV UV_SYSTEM_PYTHON=0
 
 # Copy installed packages and application code
 COPY --from=builder /root/.local /root/.local
@@ -90,13 +93,11 @@ ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 # Ensure the application source directory is always importable.
 ENV PYTHONPATH=/app
 
-# Install dependencies with uv sync (uses locked versions from uv.lock)
-# And ensure pip is available for runtime installs
-RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
-    && /app/.venv/bin/python -m ensurepip --upgrade
+# Dependencies + project are already installed into /app/.venv in the builder stage.
+# Running `uv sync` again in the runtime stage can inadvertently mutate/remove the venv.
 
-# Fail the image build early if the app package cannot be imported.
-RUN python -c "import lightrag; print('LightRAG import OK:', lightrag.__file__)"
+# Fail the image build early if the app package cannot be imported from the venv.
+RUN /app/.venv/bin/python -c "import lightrag; print('LightRAG import OK:', lightrag.__file__)"
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
@@ -112,4 +113,8 @@ ENV INPUT_DIR=/app/data/inputs
 # Expose API port
 EXPOSE 9621
 
-ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
+# IMPORTANT: Always run using the virtualenv interpreter.
+# Cloud Run logs showed `/usr/local/bin/python` failing to import `lightrag`,
+# which indicates the system interpreter is being used. Running the venv
+# interpreter ensures both dependencies and the project package are on sys.path.
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "lightrag.api.lightrag_server"]

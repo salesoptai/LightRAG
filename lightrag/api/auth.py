@@ -45,9 +45,14 @@ class AuthHandler:
         self.load_users()
 
     def load_users(self):
-        if os.path.exists("users.json"):
+        # In Cloud Run, secrets are often mounted as files.
+        # We support an explicit path override to avoid mounting secrets over /app
+        # (which can hide the application code and break imports).
+        users_path = os.getenv("USERS_JSON_PATH", "users.json")
+
+        if os.path.exists(users_path):
             try:
-                with open("users.json", "r") as f:
+                with open(users_path, "r") as f:
                     data = json.load(f)
                     for user in data.get("users", []):
                         username = user.get("username")
@@ -60,9 +65,11 @@ class AuthHandler:
                                 self.accounts[username] = password
                             if api_key:
                                 self.api_keys[api_key] = user
-                logger.info(f"Loaded {len(self.user_map)} users from users.json")
+                logger.info(
+                    f"Loaded {len(self.user_map)} users from {users_path}"
+                )
             except Exception as e:
-                logger.error(f"Error loading users.json: {e}")
+                logger.error(f"Error loading users file {users_path}: {e}")
 
     def validate_api_key(self, api_key: str) -> dict:
         """
