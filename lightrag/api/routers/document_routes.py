@@ -8,6 +8,10 @@ from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
 import traceback
+import zipfile
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
@@ -1189,6 +1193,108 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     return "\n".join(content_parts)
 
 
+def _extract_epub(file_bytes: bytes) -> str:
+    """Extract text from EPUB file (synchronous)."""
+
+    class TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.lines = []
+
+        def handle_data(self, data):
+            if data.strip():
+                self.lines.append(data.strip())
+
+        def get_text(self):
+            return "\n".join(self.lines)
+
+    try:
+        epub = zipfile.ZipFile(BytesIO(file_bytes))
+
+        # 1. Find the OPF file from META-INF/container.xml
+        try:
+            container_xml = epub.read("META-INF/container.xml")
+        except KeyError:
+            raise Exception("Invalid EPUB: META-INF/container.xml not found")
+
+        root = ET.fromstring(container_xml)
+
+        # Namespace handling is annoying in ElementTree, usually it's urn:oasis:names:tc:opendocument:xmlns:container
+        # simpler to just find the 'rootfile' element by tag name ignoring namespace or using namespace
+        ns = {"n": "urn:oasis:names:tc:opendocument:xmlns:container"}
+        rootfile = root.find(".//n:rootfile", ns)
+        if rootfile is None:
+            # Fallback if namespace doesn't match
+            rootfile = root.find(".//rootfile")
+            if rootfile is None:
+                # iterate
+                for elem in root.iter():
+                    if elem.tag.endswith("rootfile"):
+                        rootfile = elem
+                        break
+
+        if rootfile is None:
+            raise Exception("Could not find rootfile in container.xml")
+
+        opf_path = rootfile.get("full-path")
+        if not opf_path:
+            raise Exception("Rootfile full-path attribute is missing")
+
+        # 2. Parse OPF file
+        try:
+            opf_data = epub.read(opf_path)
+        except KeyError:
+            raise Exception(f"OPF file not found: {opf_path}")
+
+        opf_root = ET.fromstring(opf_data)
+
+        # Find manifest (id -> href)
+        manifest = {}
+        for elem in opf_root.iter():
+            if elem.tag.endswith("item"):
+                id_ = elem.get("id")
+                href = elem.get("href")
+                if id_ and href:
+                    manifest[id_] = href
+
+        # Find spine (ordered idrefs)
+        spine = []
+        for elem in opf_root.iter():
+            if elem.tag.endswith("itemref"):
+                idref = elem.get("idref")
+                if idref:
+                    spine.append(idref)
+
+        # 3. Extract text from spine items
+        content = []
+        opf_dir = os.path.dirname(opf_path)
+
+        for idref in spine:
+            if idref in manifest:
+                href = manifest[idref]
+                # resolve path
+                if opf_dir:
+                    file_path = opf_dir + "/" + href
+                else:
+                    file_path = href
+
+                # normalize path
+                file_path = file_path.replace("\\", "/")  # simplified normalization
+
+                try:
+                    html_content = epub.read(file_path).decode("utf-8", errors="ignore")
+                    parser = TextExtractor()
+                    parser.feed(html_content)
+                    content.append(parser.get_text())
+                except KeyError:
+                    pass  # File not found in zip
+
+        return "\n\n".join(content)
+
+    except Exception as e:
+        raise Exception(f"Failed to extract EPUB: {str(e)}")
+
+
 async def pipeline_enqueue_file(
     rag: LightRAG, file_path: Path, track_id: str = None
 ) -> tuple[bool, str]:
@@ -1277,7 +1383,6 @@ async def pipeline_enqueue_file(
                     | ".yml"
                     | ".rtf"
                     | ".odt"
-                    | ".epub"
                     | ".csv"
                     | ".log"
                     | ".conf"
@@ -1354,6 +1459,43 @@ async def pipeline_enqueue_file(
                         )
                         logger.error(
                             f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
+                        )
+                        return False, track_id
+
+                case ".epub":
+                    try:
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
+                            )
+                        else:
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to internal EPUB extractor."
+                                )
+                            # Use internal extractor (non-blocking via to_thread)
+                            content = await asyncio.to_thread(_extract_epub, file)
+                    except Exception as e:
+                        error_files = [
+                            {
+                                "file_path": str(file_path.name),
+                                "error_description": "[File Extraction]EPUB processing error",
+                                "original_error": f"Failed to extract text from EPUB: {str(e)}",
+                                "file_size": file_size,
+                            }
+                        ]
+                        await rag.apipeline_enqueue_error_documents(
+                            error_files, track_id
+                        )
+                        logger.error(
+                            f"[File Extraction]Error processing EPUB {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 
