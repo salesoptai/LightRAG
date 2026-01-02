@@ -2307,6 +2307,16 @@ class PGVectorStorage(BaseVectorStorage):
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)
+
+        # Check and align dimension with table schema
+        target_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
+        if embeddings.shape[1] > target_dim:
+            # logger.warning(f"[{self.workspace}] Truncating embeddings from {embeddings.shape[1]} to {target_dim} to match Postgres schema")
+            embeddings = embeddings[:, :target_dim]
+            # Normalize
+            norm = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            embeddings = embeddings / (norm + 1e-12)
+
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
         for item in list_data:
