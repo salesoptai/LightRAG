@@ -44,9 +44,9 @@ steps:
       - '--platform'
       - 'managed'
       - '--timeout=600'
-      # Ensure database environment variable matches the target environment
+      # Ensure database and LLM environment variables match the target environment
       - '--update-env-vars'
-      - 'POSTGRES_DATABASE=${_DB_NAME}'
+      - 'POSTGRES_DATABASE=${_DB_NAME},LLM_BINDING=openai,EMBEDDING_BINDING=openai,LLM_MODEL=gpt-4o,EMBEDDING_MODEL=text-embedding-3-small'
       # Remove conflicting literal environment variables before mounting secrets
       - '--remove-env-vars=POSTGRES_PASSWORD,LLM_BINDING_API_KEY,EMBEDDING_BINDING_API_KEY'
       # Mount secrets for multi-tenancy and database access
