@@ -63,7 +63,7 @@ steps:
       # Instead mount to a dedicated path and point the app at it via USERS_JSON_PATH.
       - '--update-env-vars'
       - 'USERS_JSON_PATH=/var/secrets/lightrag/users.json'
-      - '--set-secrets=/var/secrets/lightrag/users.json=lightrag-users-config:latest,POSTGRES_PASSWORD=lightrag-postgres-password:latest,LLM_BINDING_API_KEY=lightrag-openai-api-key:latest,EMBEDDING_BINDING_API_KEY=lightrag-openai-api-key:latest'
+      - '--set-secrets=/var/secrets/lightrag/users.json=lightrag-users-config:latest,POSTGRES_PASSWORD=${_DB_SECRET_NAME}:latest,LLM_BINDING_API_KEY=lightrag-openai-api-key:latest,EMBEDDING_BINDING_API_KEY=lightrag-openai-api-key:latest'
 
 # ==============================================================================
 # SUBSTITUTIONS
@@ -76,6 +76,7 @@ substitutions:
   # Default values (Targeting Staging by default for safety)
   _SERVICE_NAME: lightrag-staging
   _DB_NAME: lightrag_staging
+  _DB_SECRET_NAME: lightrag-staging-postgres-password
 
 # ==============================================================================
 # IMAGES
