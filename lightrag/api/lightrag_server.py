@@ -893,6 +893,9 @@ def create_app(args):
     if args.embedding_binding in ["jina", "gemini"]:
         send_dimensions = has_embedding_dim_param
         dimension_control = f"forced by {args.embedding_binding.title()} API"
+    elif args.embedding_binding == "openai" and args.embedding_dim is not None:
+        send_dimensions = has_embedding_dim_param
+        dimension_control = "auto-enabled by EMBEDDING_DIM config"
     else:
         send_dimensions = embedding_send_dim and has_embedding_dim_param
         if send_dimensions or not embedding_send_dim:
