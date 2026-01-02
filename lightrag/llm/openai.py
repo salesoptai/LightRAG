@@ -107,6 +107,9 @@ def create_openai_async_client(
                 "LLM_BINDING_API_KEY"
             )
 
+        if api_key:
+            api_key = api_key.strip()
+
         if client_configs is None:
             client_configs = {}
 
@@ -130,6 +133,9 @@ def create_openai_async_client(
     else:
         if not api_key:
             api_key = os.environ["OPENAI_API_KEY"]
+
+        if api_key:
+            api_key = api_key.strip()
 
         default_headers = {
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
