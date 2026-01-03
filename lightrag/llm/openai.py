@@ -695,7 +695,7 @@ async def nvidia_openai_complete(
 )
 async def openai_embed(
     texts: list[str],
-    model: str = "text-embedding-3-small",
+    model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
@@ -757,6 +757,8 @@ async def openai_embed(
     async with openai_async_client:
         # Determine the correct model identifier to use
         # For Azure OpenAI, we must use the deployment name instead of the model name
+        if model is None:
+            model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
         api_model = azure_deployment if use_azure and azure_deployment else model
 
         # Prepare API call parameters
