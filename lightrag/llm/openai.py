@@ -761,6 +761,8 @@ async def openai_embed(
             model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
         api_model = azure_deployment if use_azure and azure_deployment else model
 
+        logger.info(f"OpenAI Embed: model={model}, api_model={api_model}, embedding_dim={embedding_dim}, env_model={os.getenv('EMBEDDING_MODEL')}")
+
         # Prepare API call parameters
         api_params = {
             "model": api_model,
