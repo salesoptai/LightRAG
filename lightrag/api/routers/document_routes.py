@@ -1200,12 +1200,64 @@ def _extract_epub(file_bytes: bytes) -> str:
         def __init__(self):
             super().__init__()
             self.lines = []
+            self.current_line = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag in [
+                "p",
+                "div",
+                "br",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+                "li",
+                "blockquote",
+                "tr",
+            ]:
+                self._flush_line()
+            elif tag in ["b", "strong"]:
+                self.current_line.append("**")
+            elif tag in ["i", "em"]:
+                self.current_line.append("*")
+
+        def handle_endtag(self, tag):
+            if tag in [
+                "p",
+                "div",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+                "li",
+                "blockquote",
+                "tr",
+            ]:
+                self._flush_line()
+            elif tag in ["b", "strong"]:
+                self.current_line.append("**")
+            elif tag in ["i", "em"]:
+                self.current_line.append("*")
+            elif tag in ["td", "th"]:
+                self.current_line.append("\t")
 
         def handle_data(self, data):
-            if data.strip():
-                self.lines.append(data.strip())
+            text = data.replace("\n", " ")
+            if text:
+                self.current_line.append(text)
+
+        def _flush_line(self):
+            line = "".join(self.current_line).strip()
+            if line:
+                self.lines.append(line)
+            self.current_line = []
 
         def get_text(self):
+            self._flush_line()
             return "\n".join(self.lines)
 
     try:
