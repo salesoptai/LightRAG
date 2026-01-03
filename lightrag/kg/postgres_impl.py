@@ -1091,7 +1091,31 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"Failed to batch check field lengths: {e}")
 
+    async def _ensure_vector_tables_schema(self):
+        """Pre-check vector tables and drop them if dimensions mismatch to allow recreation"""
+        vdb_tables = ["LIGHTRAG_VDB_CHUNKS", "LIGHTRAG_VDB_ENTITY", "LIGHTRAG_VDB_RELATION"]
+        target_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
+        
+        for table in vdb_tables:
+            try:
+                # Check if table exists
+                await self.query(f"SELECT 1 FROM {table} LIMIT 1")
+                
+                # Try to ALTER to check compatibility
+                try:
+                    await self.execute(f"ALTER TABLE {table} ALTER COLUMN content_vector TYPE VECTOR({target_dim})")
+                except Exception as e:
+                    logger.warning(f"Vector dimension mismatch/update failed for {table}: {e}. Dropping table to force recreation with correct schema.")
+                    # Drop table (CASCADE to remove indexes/views) to allow check_tables to recreate it with new schema
+                    await self.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+            except Exception:
+                # Table doesn't exist or other error, check_tables will handle creation
+                pass
+
     async def check_tables(self):
+        # Ensure vector tables have correct schema before creation check
+        await self._ensure_vector_tables_schema()
+
         # First create all tables
         for k, v in TABLES.items():
             try:

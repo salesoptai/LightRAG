@@ -763,12 +763,6 @@ async def openai_embed(
 
         logger.info(f"OpenAI Embed: model={model}, api_model={api_model}, embedding_dim={embedding_dim}, env_model={os.getenv('EMBEDDING_MODEL')}")
 
-        # Safety override: Force text-embedding-3-large if dimensions are 3072
-        # This handles cases where config defaults might incorrectly point to small model
-        if embedding_dim == 3072 and api_model != "text-embedding-3-large":
-             logger.warning(f"Forcing model to text-embedding-3-large because dim is 3072. Was: {api_model}")
-             api_model = "text-embedding-3-large"
-
         # Prepare API call parameters
         api_params = {
             "model": api_model,
