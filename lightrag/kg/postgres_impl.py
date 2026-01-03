@@ -1381,6 +1381,21 @@ class PostgreSQLDB:
             except Exception as e:
                 logger.warning(f"Failed to create index {index['name']}: {e}")
 
+    async def _ensure_vector_dimension(self, table_name: str, target_dim: int, index_name: str):
+        """Ensure vector column has correct dimension, dropping index if needed"""
+        try:
+            # Try to alter directly
+            await self.execute(f"ALTER TABLE {table_name} ALTER COLUMN content_vector TYPE VECTOR({target_dim})")
+        except Exception as e:
+            # If error suggests index dependency or type mismatch that requires index drop
+            logger.info(f"Direct alter failed for {table_name}, trying to drop index {index_name} and retry: {e}")
+            try:
+                await self.execute(f"DROP INDEX IF EXISTS {index_name}")
+                await self.execute(f"ALTER TABLE {table_name} ALTER COLUMN content_vector TYPE VECTOR({target_dim})")
+                logger.info(f"Successfully migrated {table_name} to {target_dim} dimensions")
+            except Exception as e2:
+                logger.error(f"Failed to migrate vector dimension for {table_name}: {e2}")
+
     async def _create_vector_indexes(self):
         vdb_tables = [
             "LIGHTRAG_VDB_CHUNKS",
@@ -1411,6 +1426,10 @@ class PostgreSQLDB:
             vector_index_name = (
                 f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
             )
+            
+            # Ensure dimension is correct before checking index
+            await self._ensure_vector_dimension(k, embedding_dim, vector_index_name)
+
             check_vector_index_sql = f"""
                     SELECT 1 FROM pg_indexes
                     WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
