@@ -52,9 +52,11 @@ steps:
       - '--update-env-vars'
       - 'EMBEDDING_BINDING=openai'
       - '--update-env-vars'
-      - 'LLM_MODEL=gpt-4o'
+      - 'LLM_MODEL=gpt-4.1-mini'
       - '--update-env-vars'
-      - 'EMBEDDING_MODEL=text-embedding-3-small'
+      - 'EMBEDDING_MODEL=text-embedding-3-large'
+      - '--update-env-vars'
+      - 'EMBEDDING_DIM=3072'
       # Remove conflicting literal environment variables before mounting secrets
       - '--remove-env-vars=POSTGRES_PASSWORD,LLM_BINDING_API_KEY,EMBEDDING_BINDING_API_KEY'
       # Mount secrets for multi-tenancy and database access
