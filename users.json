@@ -10,7 +10,7 @@
       "username": "affiliate",
       "password": "Playoffs2021!",
       "api_key": "sk-affiliate-key",
-      "workspace": "default"
+      "workspace": "affiliate"
     },
     {
       "username": "tenant_a",

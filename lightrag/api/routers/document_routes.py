@@ -387,7 +387,7 @@ class DeleteDocRequest(BaseModel):
         description="Whether to delete the corresponding file in the upload directory.",
     )
     delete_llm_cache: bool = Field(
-        default=False,
+        default=True,
         description="Whether to delete cached LLM extraction results for the documents.",
     )
 
