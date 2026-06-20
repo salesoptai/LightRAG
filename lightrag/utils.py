@@ -40,6 +40,7 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    RELATION_CHUNK_KEY_MAX_LENGTH,
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -2913,9 +2914,31 @@ def subtract_source_ids(
 
 
 def make_relation_chunk_key(src: str, tgt: str) -> str:
-    """Create a deterministic storage key for relation chunk tracking."""
+    """Create a deterministic storage key for relation chunk tracking.
 
-    return GRAPH_FIELD_SEP.join(sorted((src, tgt)))
+    Normally the key is "<sorted_src><SEP><sorted_tgt>".  When two long entity
+    names would push the key beyond RELATION_CHUNK_KEY_MAX_LENGTH (i.e. beyond
+    the VARCHAR(512) column in LIGHTRAG_RELATION_CHUNKS), the function falls
+    back to a compact, collision-resistant MD5-based key so that ingestion
+    never fails regardless of entity-name length.
+    """
+    key = GRAPH_FIELD_SEP.join(sorted((src, tgt)))
+    if len(key) <= RELATION_CHUNK_KEY_MAX_LENGTH:
+        return key
+    # Fallback: hash the full sorted key so the result is always short and
+    # deterministic.  The "relkey-" prefix makes hashed keys easy to identify
+    # in logs and avoids any accidental collision with a legitimate short key.
+    digest = md5(key.encode("utf-8")).hexdigest()
+    logger.warning(
+        "make_relation_chunk_key: key length %d exceeds limit %d, "
+        "using hashed key relkey-%s for src='%s...' tgt='%s...'",
+        len(key),
+        RELATION_CHUNK_KEY_MAX_LENGTH,
+        digest,
+        src[:30],
+        tgt[:30],
+    )
+    return f"relkey-{digest}"
 
 
 def parse_relation_chunk_key(key: str) -> tuple[str, str]:
