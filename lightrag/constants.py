@@ -13,7 +13,12 @@ DEFAULT_MAX_GRAPH_NODES = 1000
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
-DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
+# Max length for a single entity name. This value must satisfy:
+#   2 * DEFAULT_ENTITY_NAME_MAX_LENGTH + len(GRAPH_FIELD_SEP) <= 512
+# because LIGHTRAG_RELATION_CHUNKS.id stores two entity names joined by
+# GRAPH_FIELD_SEP ("<SEP>", 5 chars) in a VARCHAR(512) column.
+# With limit=253: worst case = 253 + 5 + 253 = 511, safely within 512.
+DEFAULT_ENTITY_NAME_MAX_LENGTH = 253
 
 # Number of description fragments to trigger LLM summary
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
